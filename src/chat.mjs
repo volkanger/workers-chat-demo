@@ -97,8 +97,9 @@ export default {
       // We have received an HTTP request! Parse the URL and route the request.
 
       let url = new URL(request.url);
+      console.log(url.pathname)
       let path = url.pathname.slice(1).split('/');
-
+      //console.log(path[1])
       if (!path[0]) {
         // Serve our HTML at the root path.
         return new Response(HTML, {headers: {"Content-Type": "text/html;charset=UTF-8"}});
@@ -119,7 +120,7 @@ export default {
 
 async function handleApiRequest(path, request, env) {
   // We've received at API request. Route the request based on the path.
-
+  //path0 is the 
   switch (path[0]) {
     case "room": {
       // Request for `/api/room/...`.

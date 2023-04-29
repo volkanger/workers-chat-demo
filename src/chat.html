@@ -424,12 +424,11 @@ function join() {
       if (!wroteWelcomeMessages) {
         wroteWelcomeMessages = true;
         addChatMessage(null,
-            "* This is a demo app built with Cloudflare Workers Durable Objects. The source code " +
-            "can be found at: https://github.com/cloudflare/workers-chat-demo");
+            "* This is a chat app built with Cloudflare Workers utilizing Durable Objects.");
         addChatMessage(null,
-            "* WARNING: Participants in this chat are random people on the internet. " +
-            "Names are not authenticated; anyone can pretend to be anyone. The people " +
-            "you are chatting with are NOT Cloudflare employees. Chat history is saved.");
+            "* WARNING: Participants in this chat are random freaks on the internet. " +
+            "Names are not authenticated by any means; therefore anyone can pretend to be anyone. However, I'm the real Caner." +
+            "Don't forget, chat history is saved. for. ever. and ever.");
         if (roomname.length == 64) {
           addChatMessage(null,
               "* This is a private room. You can invite someone to the room by sending them the URL.");
