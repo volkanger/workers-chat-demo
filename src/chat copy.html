@@ -298,7 +298,7 @@ function startChat() {
   // Normalize the room name a bit.
   roomname = roomname.replace(/[^a-zA-Z0-9_-]/g, "").replace(/_/g, "-").toLowerCase();
 
-  if (roomname.length > 60 && !roomname.match(/^[0-9a-f]{64}$/)) {
+  if (roomname.length > 32 && !roomname.match(/^[0-9a-f]{64}$/)) {
     addChatMessage("ERROR", "Invalid room name.");
     return;
   }

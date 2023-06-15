@@ -1,3 +1,64 @@
+// This is the Edge Chat Demo Worker, built using Durable Objects!
+
+// ===============================
+// Introduction to Modules
+// ===============================
+//
+// The first thing you might notice, if you are familiar with the Workers platform, is that this
+// Worker is written differently from others you may have seen. It even has a different file
+// extension. The `mjs` extension means this JavaScript is an ES Module, which, among other things,
+// means it has imports and exports. Unlike other Workers, this code doesn't use
+// `addEventListener("fetch", handler)` to register its main HTTP handler; instead, it _exports_
+// a handler, as we'll see below.
+//
+// This is a new way of writing Workers that we expect to introduce more broadly in the future. We
+// like this syntax because it is *composable*: You can take two workers written this way and
+// merge them into one worker, by importing the two Workers' exported handlers yourself, and then
+// exporting a new handler that call into the other Workers as appropriate.
+//
+// This new syntax is required when using Durable Objects, because your Durable Objects are
+// implemented by classes, and those classes need to be exported. The new syntax can be used for
+// writing regular Workers (without Durable Objects) too, but for now, you must be in the Durable
+// Objects beta to be able to use the new syntax, while we work out the quirks.
+//
+// To see an example configuration for uploading module-based Workers, check out the wrangler.toml
+// file or one of our Durable Object templates for Wrangler:
+//   * https://github.com/cloudflare/durable-objects-template
+//   * https://github.com/cloudflare/durable-objects-rollup-esm
+//   * https://github.com/cloudflare/durable-objects-webpack-commonjs
+
+// ===============================
+// Required Environment
+// ===============================
+//
+// This worker, when deployed, must be configured with two environment bindings:
+// * rooms: A Durable Object namespace binding mapped to the ChatRoom class.
+// * limiters: A Durable Object namespace binding mapped to the RateLimiter class.
+//
+// Incidentally, in pre-modules Workers syntax, "bindings" (like KV bindings, secrets, etc.)
+// appeared in your script as global variables, but in the new modules syntax, this is no longer
+// the case. Instead, bindings are now delivered in an "environment object" when an event handler
+// (or Durable Object class constructor) is called. Look for the variable `env` below.
+//
+// We made this change, again, for composability: The global scope is global, but if you want to
+// call into existing code that has different environment requirements, then you need to be able
+// to pass the environment as a parameter instead.
+//
+// Once again, see the wrangler.toml file to understand how the environment is configured.
+
+// =======================================================================================
+// The regular Worker part...
+//
+// This section of the code implements a normal Worker that receives HTTP requests from external
+// clients. This part is stateless.
+
+// With the introduction of modules, we're experimenting with allowing text/data blobs to be
+// uploaded and exposed as synthetic modules. In wrangler.toml we specify a rule that files ending
+// in .html should be uploaded as "Data", equivalent to content-type `application/octet-stream`.
+// So when we import it as `HTML` here, we get the HTML content as an `ArrayBuffer`. This lets us
+// serve our app's static asset without relying on any separate storage. (However, the space
+// available for assets served this way is very limited; larger sites should continue to use Workers
+// KV to serve assets.)
 import HTML from "./chat.html";
 
 // `handleErrors()` is a little utility function that can wrap an HTTP request handler in a
@@ -38,18 +99,13 @@ export default {
       let url = new URL(request.url);
       console.log("url pathname:")
       console.log(url.pathname) // root: /
-      let path = url.pathname.slice(1).split('/'); // slice drops the first /, split then gets the rest.
-      /*
-      path ==> /api/room/828/more
-              path 0: api
-              path 1: room
-              path 2: 828
-              path 3: more
-      */
-     //Can we remove the slice, and increase the path[numbers] by one? Won't it be simpler?
+      let path = url.pathname.slice(1).split('/'); // if root, that would be nada...
       console.log("path:")
       console.log(path)
-
+      console.log("path[0]:")
+      console.log(path[0])
+      console.log("path[1]:")
+      console.log(path[1])
       //console.log(path[1])
       if (!path[0]) { // if nada, then we're at root.
         console.log("path[0] seems to be !")
@@ -76,19 +132,27 @@ async function handleApiRequest(path, request, env) {
   console.log("Now in handleApiRequest")
   console.log("path[0]:")
   console.log(path[0])
-  console.log("path[1]:")
-  console.log(path[1])
-
   switch (path[0]) {
     case "room": {
       // Request for `/api/room/...`.
-      console.log("yes, case room is here")
-      if (!path[1]) { //if missing the rest after /api/room which it could be /api/room/4a78
-        console.log("so, are we missing it")
+
+      if (!path[1]) {
         // The request is for just "/api/room", with no ID.
         if (request.method == "POST") {
           // POST to /api/room creates a private room.
-          let id = env.rooms.newUniqueId(); // a random unique id for us
+          //
+          // Incidentally, this code doesn't actually store anything. It just generates a valid
+          // unique ID for this namespace. Each durable object namespace has its own ID space, but
+          // IDs from one namespace are not valid for any other.
+          //
+          // The IDs returned by `newUniqueId()` are unguessable, so are a valid way to implement
+          // "anyone with the link can access" sharing. Additionally, IDs generated this way have
+          // a performance benefit over IDs generated from names: When a unique ID is generated,
+          // the system knows it is unique without having to communicate with the rest of the
+          // world -- i.e., there is no way that someone in the UK and someone in New Zealand
+          // could coincidentally create the same ID at the same time, because unique IDs are,
+          // well, unique!
+          let id = env.rooms.newUniqueId();
           return new Response(id.toString(), {headers: {"Access-Control-Allow-Origin": "*"}});
         } else {
           // If we wanted to support returning a list of public rooms, this might be a place to do
@@ -104,23 +168,22 @@ async function handleApiRequest(path, request, env) {
         }
       }
 
-      // If have passed, so, now the request is for `/api/room/<name>/...`. It's time to route to the Durable Object for the specific room.
-      console.log("path 1:::::")
-      console.log(path[1])
-      let roomID = path[1]; //whatever comes after /room
+      // OK, the request is for `/api/room/<name>/...`. It's time to route to the Durable Object
+      // for the specific room.
+      let name = path[1];
 
       // Each Durable Object has a 256-bit unique ID. IDs can be derived from string names, or
       // chosen randomly by the system.
       let id;
-      if (roomID.match(/^[0-9a-f]{64}$/)) { //This code uses a regular expression to check if the roomID variable contains a string that is exactly 64 characters long and only contains characters in the range 0-9 and a-f. The match method returns an array of matches if the string matches the regular expression, or null if it does not. In other words, this code checks if the roomID is a valid 64-character hexadecimal string.
+      if (name.match(/^[0-9a-f]{64}$/)) {
         // The name is 64 hex digits, so let's assume it actually just encodes an ID. We use this
         // for private rooms. `idFromString()` simply parses the text as a hex encoding of the raw
         // ID (and verifies that this is a valid ID for this namespace).
-        id = env.rooms.idFromString(roomID);
-      } else if (roomID.length <= 32) {
+        id = env.rooms.idFromString(name);
+      } else if (name.length <= 32) {
         // Treat as a string room name (limited to 32 characters). `idFromName()` consistently
         // derives an ID from a string.
-        id = env.rooms.idFromName(roomID);
+        id = env.rooms.idFromName(name);
       } else {
         return new Response("Name too long", {status: 404});
       }
@@ -135,13 +198,9 @@ async function handleApiRequest(path, request, env) {
 
       // Compute a new URL with `/api/room/<name>` removed. We'll forward the rest of the path
       // to the Durable Object.
-      console.log("----------------------")
       let newUrl = new URL(request.url);
-      console.log("newUrl.pathname:")
-      console.log(newUrl.pathname) // path is /api/room/oyun/websocket
-      newUrl.pathname = "/" + path.slice(2).join("/"); // api/room/
-      console.log("newUrl.pathname after slice(2).join vs:")
-      console.log(newUrl.pathname)
+      newUrl.pathname = "/" + path.slice(2).join("/");
+
       // Send the request to the object. The `fetch()` method of a Durable Object stub has the
       // same signature as the global `fetch()` function, but the request is always sent to the
       // object, regardless of the request's URL.
@@ -154,12 +213,12 @@ async function handleApiRequest(path, request, env) {
 }
 
 // =======================================================================================
-// The GameRoom Durable Object Class
+// The ChatRoom Durable Object Class
 
-// GameRoom implements a Durable Object that coordinates an individual chat room. Participants
+// ChatRoom implements a Durable Object that coordinates an individual chat room. Participants
 // connect to the room using WebSockets, and the room broadcasts messages from each participant
 // to all others.
-export class GameRoom {
+export class ChatRoom {
   constructor(controller, env) {
     // `controller.storage` provides access to our durable storage. It provides a simple KV
     // get()/put() interface.
@@ -394,7 +453,7 @@ export class GameRoom {
 // source and decides when messages should be dropped because the source is sending too many
 // messages.
 //
-// We utilize this in GameRoom, above, to apply a per-IP-address rate limit. These limits are
+// We utilize this in ChatRoom, above, to apply a per-IP-address rate limit. These limits are
 // global, i.e. they apply across all chat rooms, so if a user spams one chat room, they will find
 // themselves rate limited in all other chat rooms simultaneously.
 export class RateLimiter {
